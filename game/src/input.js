@@ -1,50 +1,53 @@
-// input.js — keyboard + mouse state, polled by the game loop. Keys are tracked by
-// code (KeyW, ArrowUp, ...) so layout does not matter; mouse aim is in screen space
-// and converted to world space by the camera in main.js.
+// input.js — keyboard and mouse state for the game loop. The loop reads a
+// per-frame frame-input built from this raw state (see main.js): held keys, the
+// mouse position over the canvas, and edge-triggered presses.
 
-export class Input {
-  constructor(canvas) {
-    this.keys = new Set();
-    this.pressed = new Set();   // edge-triggered: went down this frame
-    this.mouseX = 0;
-    this.mouseY = 0;
-    this.mouseDown = false;
-    this.mouseClicked = false;
-    window.addEventListener('keydown', (e) => {
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
-      if (!e.repeat) this.pressed.add(e.code);
-      this.keys.add(e.code);
-    });
-    window.addEventListener('keyup', (e) => this.keys.delete(e.code));
-    window.addEventListener('blur', () => { this.keys.clear(); this.mouseDown = false; });
-    canvas.addEventListener('mousemove', (e) => {
-      const r = canvas.getBoundingClientRect();
-      this.mouseX = (e.clientX - r.left) * (canvas.width / r.width);
-      this.mouseY = (e.clientY - r.top) * (canvas.height / r.height);
-    });
-    canvas.addEventListener('mousedown', (e) => {
-      if (e.button === 0) { this.mouseDown = true; this.mouseClicked = true; }
-    });
-    window.addEventListener('mouseup', (e) => { if (e.button === 0) this.mouseDown = false; });
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+export function createInput(canvas) {
+  const keys = new Set();
+  const pressed = new Set();
+  const mouse = { x: 0, y: 0, down: false, clicked: false };
+  let menuTarget = null; // set by render: clickable menu items for the title screen
+
+  function onKeyDown(e) {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+    if (!e.repeat) pressed.add(e.code);
+    keys.add(e.code);
+  }
+  function onKeyUp(e) { keys.delete(e.code); }
+  function onMouseMove(e) {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = (e.clientX - rect.left) * (canvas.width / rect.width);
+    mouse.y = (e.clientY - rect.top) * (canvas.height / rect.height);
+  }
+  function onMouseDown(e) {
+    mouse.down = true;
+    mouse.clicked = true;
+    onMouseMove(e);
+    if (menuTarget) menuTarget(mouse.x, mouse.y);
+  }
+  function onMouseUp() { mouse.down = false; }
+  function onBlur() { keys.clear(); mouse.down = false; }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    canvas.addEventListener('mousemove', onMouseMove);
+    canvas.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mouseup', onMouseUp);
   }
 
-  down(...codes) { return codes.some((c) => this.keys.has(c)); }
-  justPressed(...codes) { return codes.some((c) => this.pressed.has(c)); }
-
-  // Movement axes from WASD + arrows: x right, y down, each in -1..1.
-  moveAxis() {
-    let x = 0, y = 0;
-    if (this.down('KeyA', 'ArrowLeft')) x -= 1;
-    if (this.down('KeyD', 'ArrowRight')) x += 1;
-    if (this.down('KeyW', 'ArrowUp')) y -= 1;
-    if (this.down('KeyS', 'ArrowDown')) y += 1;
-    if (x !== 0 && y !== 0) { const s = Math.SQRT1_2; x *= s; y *= s; }
-    return { x, y };
-  }
-
-  endFrame() {
-    this.pressed.clear();
-    this.mouseClicked = false;
-  }
+  return {
+    keys,
+    mouse,
+    /** Edge-triggered: true once per physical press. Cleared by endFrame(). */
+    wasPressed(code) { return pressed.has(code); },
+    endFrame() { pressed.clear(); mouse.clicked = false; },
+    setMenuTarget(fn) { menuTarget = fn; },
+    axis() {
+      const x = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+      const y = (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0);
+      return { x, y };
+    },
+  };
 }

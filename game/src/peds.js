@@ -1,175 +1,188 @@
-// peds.js — pedestrians: civilians strolling the sidewalks who flee danger, and
-// foot police who chase and shoot at higher wanted levels. Plain objects, updated
-// against the shared state; effects go to state.fx.
+// peds.js — the people of Sunhaven: civilians strolling the sidewalk rings, foot
+// cops who chase and shoot, and the named cast (Dede, Vince Marlowe and his guards).
+// Pedestrians are also the game's witnesses: wanted.js asks them what they saw.
 
-import { PALETTE, TILE, PITCH } from './config.js';
-import { clamp, dist } from './random.js';
-import { blockRect, collideCircleBuildings } from './city.js';
+import { collideBuildings, lineOfSight, randomSidewalkPoint } from './city.js';
+import { pick, range } from './random.js';
+import { PED_COLORS } from './config.js';
 
 let nextPedId = 1;
 
-export function makePed(rng, x, y, kind = 'civ') {
-  return {
-    id: nextPedId++,
-    x, y,
-    angle: rng.range(0, Math.PI * 2),
-    speed: 0,
-    kind,                       // 'civ' | 'cop' | 'target' | 'guard'
-    health: kind === 'cop' ? 60 : kind === 'guard' ? 80 : 40,
-    state: 'walk',              // 'walk' | 'flee' | 'chase' | 'shoot' | 'dead'
-    tx: x, ty: y,               // walk target
-    fleeFrom: null,
-    fleeTime: 0,
-    shootCd: rng.range(0.5, 1.6),
-    shirt: kind === 'cop' ? '#2c4a73' : rng.pick(PALETTE.pedShirts),
-    pants: kind === 'cop' ? '#1f2c3d' : rng.pick(PALETTE.pedPants),
-    dead: false,
-    fallAngle: 0,
-    walkPhase: rng.range(0, 6),
+export function makePed(state, kind, x, y, opts = {}) {
+  const ped = {
+    id: nextPedId++, kind, // 'civ' | 'cop' | 'dede' | 'target' | 'guard'
+    x, y, angle: range(state.rng, 0, Math.PI * 2),
+    hp: kind === 'target' ? 60 : kind === 'guard' ? 45 : kind === 'cop' ? 55 : 30,
+    color: kind === 'cop' ? '#2c3e70' : kind === 'target' ? '#20232a' : kind === 'dede' ? '#e8e3d5' : pick(state.rng, PED_COLORS),
+    target: null,         // current walk destination
+    fleeT: 0, fleeX: 0, fleeY: 0,
+    dead: false, deadT: 0,
+    fireCd: range(state.rng, 0.2, 0.9),
+    walkPhase: range(state.rng, 0, 6),
+    name: opts.name || null,
+    guardPost: opts.post || null,
   };
-}
-
-// A random point on a random block's sidewalk ring near (x, y).
-export function sidewalkPointNear(rng, x, y, spread = 2) {
-  const bx = clamp(Math.floor(x / PITCH) - 1 + rng.int(0, spread), 0, 8);
-  const by = clamp(Math.floor(y / PITCH) - 1 + rng.int(0, spread), 0, 6);
-  const r = blockRect(bx, by);
-  const side = rng.int(0, 3);
-  const t = rng.range(0.05, 0.95);
-  const inset = TILE.sidewalk / 2;
-  if (side === 0) return { x: r.x + t * r.w, y: r.y + inset };
-  if (side === 1) return { x: r.x + t * r.w, y: r.y + r.h - inset };
-  if (side === 2) return { x: r.x + inset, y: r.y + t * r.h };
-  return { x: r.x + r.w - inset, y: r.y + t * r.h };
+  state.peds.push(ped);
+  return ped;
 }
 
 export function spawnCivilians(state, count) {
-  for (let i = 0; i < count; i++) {
-    const p = sidewalkPointNear(state.rng, state.player.x, state.player.y, 3);
-    if (dist(p.x, p.y, state.player.x, state.player.y) < 60) continue;
-    state.peds.push(makePed(state.rng, p.x, p.y, 'civ'));
+  for (let i = 0; i < count; i += 1) {
+    const p = randomSidewalkPoint(state.city, state.rng);
+    makePed(state, 'civ', p.x, p.y);
   }
+}
+
+export function spawnFootCop(state, x, y) {
+  return makePed(state, 'cop', x, y);
+}
+
+function pickSidewalkTarget(state, ped) {
+  ped.target = randomSidewalkPoint(state.city, state.rng);
 }
 
 function movePed(state, ped, tx, ty, speed, dt) {
-  const dx = tx - ped.x, dy = ty - ped.y;
+  const dx = tx - ped.x;
+  const dy = ty - ped.y;
   const d = Math.hypot(dx, dy);
   if (d < 3) return true;
   ped.angle = Math.atan2(dy, dx);
-  ped.speed = speed;
-  ped.x += Math.cos(ped.angle) * speed * dt;
-  ped.y += Math.sin(ped.angle) * speed * dt;
-  const pos = { x: ped.x, y: ped.y };
-  collideCircleBuildings(state.city, pos, 9);
-  ped.x = pos.x; ped.y = pos.y;
-  ped.walkPhase += dt * (speed / 16);
-  return false;
+  const step = Math.min(d, speed * dt);
+  const fixed = collideBuildings(state.city, ped.x + (dx / d) * step, ped.y + (dy / d) * step, 9);
+  ped.x = fixed.x;
+  ped.y = fixed.y;
+  ped.walkPhase += dt * (speed / 14);
+  return d < 12;
 }
 
-export function updatePed(state, ped, dt) {
+function threatNear(state, ped) {
+  // Gunfire, a fast car or an aimed gun nearby sends civilians running.
+  const player = state.player;
+  if (state.time - (state.lastNoiseT || -9) < 0.7 && Math.hypot(state.lastNoiseX - ped.x, state.lastNoiseY - ped.y) < 170) {
+    return { x: state.lastNoiseX, y: state.lastNoiseY };
+  }
+  const px = player.car ? player.car.x : player.x;
+  const py = player.car ? player.car.y : player.y;
+  const d = Math.hypot(px - ped.x, py - ped.y);
+  if (player.car && Math.abs(player.car.speed) > 130 && d < 95) return { x: px, y: py };
+  if (!player.car && state.inp && state.inp.fire && d < 130) return { x: px, y: py };
+  return null;
+}
+
+function updateCivilian(state, ped, dt) {
+  const threat = threatNear(state, ped);
+  if (threat) { ped.fleeT = 1.1; ped.fleeX = threat.x; ped.fleeY = threat.y; }
+  if (ped.fleeT > 0) {
+    ped.fleeT -= dt;
+    const away = Math.atan2(ped.y - ped.fleeY, ped.x - ped.fleeX);
+    movePed(state, ped, ped.x + Math.cos(away) * 90, ped.y + Math.sin(away) * 90, 205, dt);
+    return;
+  }
+  if (!ped.target || movePed(state, ped, ped.target.x, ped.target.y, 62, dt)) {
+    if (state.rng() < 0.02 || !ped.target) pickSidewalkTarget(state, ped);
+  }
+}
+
+function updateCop(state, ped, dt) {
+  const player = state.player;
+  const dist = Math.hypot(player.x - ped.x, player.y - ped.y);
+  const seen = dist < 460 && lineOfSight(state.city, ped.x, ped.y, player.x, player.y);
+  if (seen) state.wanted.lastSeen = state.time;
+  // No eyes on the player? Search where they were last seen, like the cars do —
+  // a cop who always knows where you are is neither fair nor fun.
+  const searching = !seen && state.wanted.lastSeen >= 0;
+  const tx = searching ? state.wanted.lastSeenX : player.x;
+  const ty = searching ? state.wanted.lastSeenY : player.y;
+  const targetDist = Math.hypot(tx - ped.x, ty - ped.y);
+  if (player.car) {
+    // Foot cops converge on the search point when the player is driving.
+    if (targetDist > 60) movePed(state, ped, tx, ty, 96, dt);
+    return;
+  }
+  if (targetDist > 42) {
+    movePed(state, ped, tx, ty, 178, dt);
+  } else if (!searching) {
+    ped.angle = Math.atan2(player.y - ped.y, player.x - ped.x);
+  }
+  // Cops open fire at 3+ stars when they have a shot.
+  ped.fireCd -= dt;
+  if (state.wanted.stars >= 3 && seen && dist < 250 && dist > 30 && ped.fireCd <= 0) {
+    ped.fireCd = range(state.rng, 0.55, 0.95);
+    state.events.push({ type: 'copShoot', ped, tx: player.x, ty: player.y });
+  }
+}
+
+function updateGuard(state, ped, dt) {
+  const player = state.player;
+  const post = ped.guardPost || ped;
+  const distP = Math.hypot(player.x - ped.x, player.y - ped.y);
+  // Marlowe's men turn hostile once Vince is confronted; the bank guards once
+  // Marco is close to (or inside) the cash truck.
+  const hostile = (state.mission.i === 3 && state.mission.phase >= 1)
+    || (state.mission.i === 5 && (player.car === state.mission.data.car || distP < 170));
+  if (hostile && distP < 300 && lineOfSight(state.city, ped.x, ped.y, player.x, player.y)) {
+    if (distP > 110) movePed(state, ped, player.x, player.y, 150, dt);
+    else ped.angle = Math.atan2(player.y - ped.y, player.x - ped.x);
+    ped.fireCd -= dt;
+    if (distP < 235 && ped.fireCd <= 0) {
+      ped.fireCd = range(state.rng, 0.6, 1.0);
+      state.events.push({ type: 'copShoot', ped, tx: player.x, ty: player.y, guard: true });
+    }
+  } else if (Math.hypot(post.x - ped.x, post.y - ped.y) > 14) {
+    movePed(state, ped, post.x, post.y, 70, dt);
+  }
+}
+
+function updateTarget(state, ped, dt) {
+  // Vince Marlowe paces his yard; once the mission turns hostile he runs.
+  const player = state.player;
+  const hostile = state.mission.i === 3 && state.mission.phase >= 1;
+  const distP = Math.hypot(player.x - ped.x, player.y - ped.y);
+  if (hostile && distP < 260) {
+    const away = Math.atan2(ped.y - player.y, ped.x - player.x);
+    movePed(state, ped, ped.x + Math.cos(away) * 120, ped.y + Math.sin(away) * 120, 172, dt);
+    return;
+  }
+  if (!ped.target || movePed(state, ped, ped.target.x, ped.target.y, 46, dt)) {
+    const post = ped.guardPost || ped;
+    ped.target = { x: post.x + range(state.rng, -46, 46), y: post.y + range(state.rng, -46, 46) };
+  }
+}
+
+export function updatePeds(state, dt) {
+  for (const ped of state.peds) {
+    if (ped.dead) { ped.deadT += dt; continue; }
+    if (ped.kind === 'civ') updateCivilian(state, ped, dt);
+    else if (ped.kind === 'cop') updateCop(state, ped, dt);
+    else if (ped.kind === 'guard') updateGuard(state, ped, dt);
+    else if (ped.kind === 'target') updateTarget(state, ped, dt);
+    else if (ped.kind === 'dede') {
+      ped.angle += Math.sin(state.time * 0.7 + ped.id) * 0.12 * dt;
+    }
+  }
+  // Bodies fade; the living stay.
+  state.peds = state.peds.filter((ped) => !ped.dead || ped.deadT < 6);
+}
+
+export function damagePed(state, ped, amount, cause) {
   if (ped.dead) return;
-  const p = state.player;
-  const dPlayer = dist(ped.x, ped.y, p.x, p.y);
-
-  if (ped.kind === 'cop') { updateFootCop(state, ped, dt, dPlayer); return; }
-  if (ped.kind === 'guard') { updateGuard(state, ped, dt, dPlayer); return; }
-  if (ped.kind === 'target') {
-    // The story target strolls until hurt, then runs.
-    if (ped.state === 'flee') fleeStep(state, ped, dt);
-    else if (movePed(state, ped, ped.tx, ped.ty, 42, dt)) {
-      const t = sidewalkPointNear(state.rng, ped.x, ped.y, 1);
-      ped.tx = t.x; ped.ty = t.y;
-    }
-    return;
-  }
-
-  // Civilian: flee danger, otherwise stroll between sidewalk points.
-  const threat = ped.fleeFrom;
-  if (ped.state === 'flee' && threat) { fleeStep(state, ped, dt); return; }
-  // A fast car or a drawn gun nearby spooks them (also how crimes get witnessed).
-  const pSpeed = p.car ? Math.abs(p.car.speed) : 0;
-  if ((dPlayer < 74 && pSpeed > 165) || (dPlayer < 60 && p.aiming)) {
-    startFlee(state, ped, p.x, p.y);
-    return;
-  }
-  if (movePed(state, ped, ped.tx, ped.ty, 52, dt)) {
-    const t = sidewalkPointNear(state.rng, ped.x, ped.y, 2);
-    ped.tx = t.x; ped.ty = t.y;
-  }
-  if (dPlayer > 1000) ped.dead = true; // far away: let the spawner recycle
-}
-
-export function startFlee(state, ped, fromX, fromY) {
-  ped.state = 'flee';
-  ped.fleeFrom = { x: fromX, y: fromY };
-  ped.fleeTime = 2.6;
-  state.fx.push({ type: 'scream', x: ped.x, y: ped.y });
-}
-
-function fleeStep(state, ped, dt) {
-  ped.fleeTime -= dt;
-  const a = Math.atan2(ped.y - ped.fleeFrom.y, ped.x - ped.fleeFrom.x);
-  const tx = ped.x + Math.cos(a) * 120, ty = ped.y + Math.sin(a) * 120;
-  movePed(state, ped, tx, ty, 168, dt);
-  if (ped.fleeTime <= 0) { ped.state = 'walk'; ped.fleeFrom = null; }
-}
-
-function updateFootCop(state, ped, dt, dPlayer) {
-  const p = state.player;
-  if (state.wanted.stars === 0) {
-    // No longer wanted: foot cops give up and walk off, then despawn.
-    if (movePed(state, ped, ped.tx, ped.ty, 60, dt) || dPlayer > 700) ped.dead = true;
-    return;
-  }
-  ped.angle = Math.atan2(p.y - ped.y, p.x - ped.x);
-  if (dPlayer > 130) {
-    movePed(state, ped, p.x, p.y, 178, dt);
-    ped.state = 'chase';
-  } else if (dPlayer < 74) {
-    movePed(state, ped, ped.x - Math.cos(ped.angle) * 40, ped.y - Math.sin(ped.angle) * 40, 90, dt);
-    ped.state = 'shoot';
-  } else {
-    ped.speed = 0;
-    ped.state = 'shoot';
-  }
-  // Bust: a foot cop who touches an on-foot player at low wanted ends the chase.
-  if (!p.car && dPlayer < 20 && state.wanted.stars <= 2) {
-    state.fx.push({ type: 'busted' });
-  }
-  ped.shootCd -= dt;
-  if (ped.state === 'shoot' && ped.shootCd <= 0 && dPlayer < 260) {
-    ped.shootCd = state.rng.range(0.9, 1.5);
-    state.fx.push({ type: 'copShoot', ped });
+  ped.hp -= amount;
+  ped.fleeT = Math.max(ped.fleeT, 0.8);
+  ped.fleeX = state.player.x;
+  ped.fleeY = state.player.y;
+  if (ped.hp <= 0) {
+    ped.dead = true;
+    ped.deadT = 0;
+    state.events.push({ type: 'pedDown', ped, cause, x: ped.x, y: ped.y });
   }
 }
 
-function updateGuard(state, ped, dt, dPlayer) {
-  const p = state.player;
-  // Guards protect the story target: they engage only when the player is close
-  // or has hurt anyone nearby.
-  if (ped.state !== 'shoot' && dPlayer > 190 && !ped.aggro) {
-    if (movePed(state, ped, ped.tx, ped.ty, 40, dt)) {
-      const t = sidewalkPointNear(state.rng, ped.x, ped.y, 1);
-      ped.tx = t.x; ped.ty = t.y;
-    }
-    return;
+/** Everyone close enough to see a point — the witness pool for a crime. */
+export function witnessesAt(state, x, y, radius) {
+  const out = [];
+  for (const ped of state.peds) {
+    if (ped.dead) continue;
+    if (Math.hypot(ped.x - x, ped.y - y) < radius) out.push(ped);
   }
-  ped.aggro = true;
-  ped.angle = Math.atan2(p.y - ped.y, p.x - ped.x);
-  if (dPlayer > 120) movePed(state, ped, p.x, p.y, 150, dt);
-  else ped.speed = 0;
-  ped.state = 'shoot';
-  ped.shootCd -= dt;
-  if (ped.shootCd <= 0 && dPlayer < 250) {
-    ped.shootCd = state.rng.range(1.0, 1.7);
-    state.fx.push({ type: 'copShoot', ped });
-  }
-}
-
-// Keep civilians topped up; remove the dead and the far-gone.
-export function maintainPeds(state, civCount) {
-  state.peds = state.peds.filter((ped) => !(ped.dead && ped.kind === 'civ' && dist(ped.x, ped.y, state.player.x, state.player.y) > 420));
-  let civs = 0;
-  for (const ped of state.peds) if (!ped.dead && ped.kind === 'civ') civs++;
-  if (civs < civCount) spawnCivilians(state, Math.min(3, civCount - civs));
+  return out;
 }

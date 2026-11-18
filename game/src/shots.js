@@ -1,63 +1,145 @@
-// shots.js — deterministic scenes for the entry's screenshots: ?shot=<name>&seed=<n>
-// poses the game (a police chase, a mission on foot, a night street) so the maker
-// can capture real renders of the game running. Normal play ignores the parameter.
+// shots.js — deterministic screenshot scenes behind ?shot=title|mission|chase|night
+// &seed=<n>. Each scene poses the real game state (never a mock-up): the same
+// systems, the same city, arranged so a still frame shows as much of the game as
+// possible — a chase with its wanted stars, minimap and objective for the chase
+// scenes, Dede's first job for the mission scene, the start screen for the title.
+// Normal play ignores the parameters entirely.
+//
+// A note on dayT: the sun cycle is DAY_LENGTH (300) long and sunLevels() maps
+// phase 0.25 to noon and 0.5 to dusk — sunset is dayT 150, and by dayT 168 the
+// darkness is already ~0.76, i.e. night for every practical purpose. A scene
+// that wants daylight must sit near dayT 75, where darkness is exactly 0.
 
-import { makePoliceCar } from './cars.js';
-import { reportCrime } from './wanted.js';
+import { PITCH, ROAD } from './config.js';
+import { setStars } from './wanted.js';
+import { spawnPoliceCar } from './cars.js';
 
-export function shotName() {
+/** Parse the shot parameters from a URL query string; null when absent. */
+export function readShotParams(search) {
   try {
-    return new URLSearchParams(window.location.search).get('shot');
-  } catch { return null; }
+    const params = new URLSearchParams(search || '');
+    const name = params.get('shot');
+    if (!name) return null;
+    const seed = Number.parseInt(params.get('seed') || '1', 10);
+    return { name, seed: Number.isFinite(seed) ? seed : 1 };
+  } catch {
+    return null;
+  }
 }
 
-export function seedParam(fallback) {
-  try {
-    const s = new URLSearchParams(window.location.search).get('seed');
-    const n = s === null ? NaN : parseInt(s, 10);
-    return Number.isFinite(n) ? n : fallback;
-  } catch { return fallback; }
+function placePlayerAt(state, x, y, angle) {
+  state.player.x = x;
+  state.player.y = y;
+  state.player.angle = angle;
+  state.cam.x = x;
+  state.cam.y = y;
 }
 
-// Pose a scene on a freshly built state. Returns true if a scene was applied.
-export function applyShot(state, name) {
-  if (!name) return false;
-  const p = state.player;
-  const diner = state.city.places.diner;
+/**
+ * Move ambient traffic and pedestrians out of a staged scene's way. A stray
+ * traffic car parked in the chase corridor (or a civilian stepping off the
+ * kerb) would hand the player crimes he never chose — a hit-and-run is worth
+ * 30 heat, more than enough to spoil a carefully set star count.
+ */
+function clearCorridor(state, spareCar, cx, cy) {
+  let moved = 0;
+  for (const car of state.cars) {
+    if (car === spareCar || car.kind === 'police') continue;
+    if (Math.hypot(car.x - cx, car.y - cy) < 680) {
+      // Exile it to the northernmost road, cruising away from every scene.
+      car.x = 220 + (moved % 7) * 140;
+      car.y = ROAD * 0.74;
+      car.angle = 0;
+      car.speed = 60;
+      moved += 1;
+    }
+  }
+  for (const ped of state.peds) {
+    if (Math.hypot(ped.x - cx, ped.y - cy) < 280) {
+      // Walkers wait on the north-west sidewalk corner of their own block.
+      ped.x = Math.floor(ped.x / PITCH) * PITCH + ROAD + 8;
+      ped.y = Math.floor(ped.y / PITCH) * PITCH + ROAD + 8;
+    }
+  }
+}
+
+/**
+ * Pose a three-star car chase on a real traffic lane. Every unit travels the
+ * same way at a matched speed with generous gaps: an oncoming or tailgating
+ * unit would trade paint with the player within a second, and each witnessed
+ * crash is +6 heat — the 34 points of headroom above three stars (110) would
+ * be gone before the shutter clicks, and the HUD would show four.
+ */
+function stageChase(state, { anchorX, laneY, wrongLaneY, angle, playerSpeed }) {
+  const coupe = state.cars.find((c) => c.kind === 'parked' && c.type === 'coupe')
+    || state.cars.find((c) => c.kind === 'parked')
+    || state.cars[0];
+  coupe.x = anchorX;
+  coupe.y = laneY;
+  coupe.angle = angle;
+  coupe.speed = playerSpeed;
+  coupe.driver = false;
+  state.player.car = coupe;
+  placePlayerAt(state, coupe.x, coupe.y, coupe.angle);
+  clearCorridor(state, coupe, coupe.x, coupe.y);
+  state.mission.i = 2;
+  state.mission.phase = 1;
+  state.mission.timer = 118;
+  setStars(state, 3);
+  // Two squad cars on his tail in his lane, a third pacing him in the other
+  // lane and drifting gently across — a chase, not a demolition derby.
+  const dirX = Math.cos(angle);
+  const spots = [
+    { back: 470, y: laneY, a: angle },
+    { back: 620, y: laneY, a: angle },
+    { back: 545, y: wrongLaneY, a: angle + 0.06 },
+  ];
+  for (const s of spots) {
+    const cop = spawnPoliceCar(state, coupe.x - dirX * s.back, s.y);
+    cop.angle = s.a;
+    cop.speed = 120;
+  }
   state.mode = 'playing';
-  if (name === 'chase' || name === 'night') {
-    // Behind the wheel, three stars, squad cars on the tail, downtown.
-    const car = state.cars.find((c) => c.kind === 'traffic') || state.cars[0];
-    if (car) {
-      car.x = 1180; car.y = 830; car.angle = 0.4; car.speed = 210;
-      car.kind = 'traffic'; car.driver = false; car.ai = null;
-      p.car = car; car.occupied = true;
-      p.x = car.x; p.y = car.y;
-    }
-    reportCrime(state, p.x, p.y, 20, true);
-    for (let i = 0; i < 3; i++) {
-      const cop = makePoliceCar(state.rng, p.x - 130 - i * 70, p.y + (i - 1) * 56);
-      cop.angle = 0.4;
-      cop.speed = 190;
-      state.cars.push(cop);
-    }
-    state.dayTime = name === 'night' ? 0.78 : 0.32;
-    state.banner = { title: 'Hot Courier', sub: 'Deliver to the Port Gate — the whole district just heard about it.', t: 999 };
-    return true;
-  }
+}
+
+/** Pose the named scene on a freshly created game state. */
+export function applyShot(state, name) {
+  const places = state.city.places;
   if (name === 'mission') {
-    // On foot outside Dede's, mission marker up, pistol out.
-    p.x = diner.x - 60; p.y = diner.y + 90;
-    p.angle = 0.6;
-    p.aiming = true;
-    state.dayTime = 0.3;
-    return true;
+    // On foot outside the diner, Dede waiting, the first job on the HUD.
+    placePlayerAt(state, places.diner.pad.x - 120, places.diner.pad.y + 66, -0.5);
+    state.dayT = 62;
+    state.mode = 'playing';
+  } else if (name === 'chase') {
+    // Midday downtown: eastbound on the road along the bank block's south
+    // side, sun at its peak — darkness 0, no lit windows, no headlight cones.
+    const band = (places.bank.row + 1) * PITCH;
+    stageChase(state, {
+      anchorX: places.bank.pad.x + 60,
+      laneY: band + ROAD * 0.74,
+      wrongLaneY: band + ROAD * 0.26,
+      angle: 0,
+      playerSpeed: 235,
+    });
+    state.dayT = 75; // exact noon
+  } else if (name === 'night') {
+    // Deep night in Port Solana: westbound on the harbour's south road, the
+    // warehouse blocks of the port on both sides — another district, another
+    // street, another direction from the downtown chase.
+    const band = (places.drop.row + 1) * PITCH;
+    stageChase(state, {
+      anchorX: places.drop.pad.x - 420,
+      laneY: band + ROAD * 0.26,
+      wrongLaneY: band + ROAD * 0.74,
+      angle: Math.PI,
+      playerSpeed: 225,
+    });
+    state.dayT = 232; // deep night
+  } else {
+    // title: the start screen over a slow pan of Downtown.
+    state.mode = 'title';
+    state.dayT = 96;
+    state.cam.x = places.bank.pad.x;
+    state.cam.y = places.bank.pad.y;
   }
-  if (name === 'beach') {
-    p.x = diner.x - 190; p.y = diner.y + 40;
-    p.angle = -0.4;
-    state.dayTime = 0.22;
-    return true;
-  }
-  return false;
 }

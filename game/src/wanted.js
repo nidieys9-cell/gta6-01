@@ -1,121 +1,144 @@
-// wanted.js — the wanted system: heat from witnessed crimes, stars from heat,
-// decay while hidden, and the police director that spawns squad cars and foot
-// cops to match the star level and retires them when the heat dies down.
+// wanted.js — Sunhaven's heat: crimes raise it only when somebody sees them,
+// police eyes pin it in place, and breaking sight lets it cool. The director
+// keeps the right number of squad cars and foot cops on the street per star.
 
 import { WANTED } from './config.js';
-import { clamp, dist } from './random.js';
-import { roadXs, roadYs, nearestRoadIndex, lanePoint } from './city.js';
-import { makePoliceCar } from './cars.js';
-import { makePed } from './peds.js';
-
-export function makeWanted() {
-  return { heat: 0, stars: 0, lastSeen: -99, seenNow: false, bustTimer: 0 };
-}
+import { lineOfSight, randomRoadPoint } from './city.js';
+import { spawnFootCop, witnessesAt } from './peds.js';
+import { spawnPoliceCar } from './cars.js';
 
 export function starsForHeat(heat) {
-  let s = 0;
-  for (let i = 1; i < WANTED.thresholds.length; i++) {
-    if (heat >= WANTED.thresholds[i]) s = i;
+  let stars = 0;
+  for (let i = 1; i < WANTED.thresholds.length; i += 1) {
+    if (heat >= WANTED.thresholds[i]) stars = i;
   }
-  return s;
+  return stars;
 }
 
-// Can any witness (pedestrian or police) see this point right now?
-export function witnessed(state, x, y) {
-  for (const ped of state.peds) {
-    if (!ped.dead && dist(ped.x, ped.y, x, y) < WANTED.sightRange * 0.8) return true;
+/** Did anyone see (or clearly hear) what happened at (x, y)? */
+export function crimeWitnessed(state, x, y, heard = false) {
+  const radius = heard ? WANTED.hearRange : WANTED.witnessRange;
+  const witnesses = witnessesAt(state, x, y, radius);
+  for (const ped of witnesses) {
+    if (ped.kind === 'cop') return true;
+    if (heard) return true;
+    if (lineOfSight(state.city, ped.x, ped.y, x, y)) return true;
   }
+  // Police cars carry radios and dashcams: a crime in front of one is seen.
   for (const car of state.cars) {
-    if (car.kind === 'police' && !car.dead && dist(car.x, car.y, x, y) < WANTED.sightRange) return true;
+    if (car.kind !== 'police' || car.wrecked) continue;
+    if (Math.hypot(car.x - x, car.y - y) < 300 && lineOfSight(state.city, car.x, car.y, x, y)) return true;
   }
   return false;
 }
 
-// A crime at (x,y) with a severity in heat points. Unwitnessed crimes are free —
-// but committing one in front of a cop is the same as being seen yourself.
-export function reportCrime(state, x, y, severity, alwaysSeen = false) {
-  if (alwaysSeen || witnessed(state, x, y)) {
-    state.wanted.heat += severity;
-    state.wanted.lastSeen = state.elapsed;
-    state.fx.push({ type: 'crimeSeen', x, y });
+/**
+ * Report a crime. amount is a WANTED.crime key. Unwitnessed crimes still count
+ * for a little (cameras, luck), heard gunfire for half. Returns true if seen.
+ */
+export function reportCrime(state, kind, x, y) {
+  const base = WANTED.crime[kind] || 5;
+  const heard = kind === 'gunshot';
+  const seen = crimeWitnessed(state, x, y, heard);
+  const gain = seen ? base : heard ? base * 0.5 : base * 0.22;
+  addHeat(state, gain);
+  if (seen) {
+    state.wanted.lastSeen = state.time;
+    state.wanted.lastSeenX = x;
+    state.wanted.lastSeenY = y;
   }
+  return seen;
 }
 
-// Is the player currently visible to any police unit?
-export function playerSeen(state) {
-  const p = state.player;
+export function addHeat(state, amount) {
+  const w = state.wanted;
+  w.heat = Math.min(WANTED.maxHeat, w.heat + amount);
+  w.stars = starsForHeat(w.heat);
+}
+
+export function setStars(state, stars) {
+  const w = state.wanted;
+  w.heat = WANTED.thresholds[stars] + 1;
+  w.stars = stars;
+  w.lastSeen = state.time;
+  w.lastSeenX = state.player.x;
+  w.lastSeenY = state.player.y;
+}
+
+export function clearWanted(state) {
+  state.wanted.heat = 0;
+  state.wanted.stars = 0;
+  state.wanted.grabT = 0;
+}
+
+/** Are the police looking at the player right now? (Staggered, cheap.) */
+function policeSeePlayer(state) {
+  const player = state.player;
+  const px = player.car ? player.car.x : player.x;
+  const py = player.car ? player.car.y : player.y;
   for (const car of state.cars) {
-    if (car.kind === 'police' && !car.dead && dist(car.x, car.y, p.x, p.y) < WANTED.sightRange) return true;
+    if (car.kind !== 'police' || car.wrecked) continue;
+    if (Math.hypot(car.x - px, car.y - py) < WANTED.sightRange && lineOfSight(state.city, car.x, car.y, px, py)) return true;
   }
   for (const ped of state.peds) {
-    if (ped.kind === 'cop' && !ped.dead && dist(ped.x, ped.y, p.x, p.y) < WANTED.sightRange * 0.8) return true;
+    if (ped.kind !== 'cop' || ped.dead) continue;
+    if (Math.hypot(ped.x - px, ped.y - py) < 460 && lineOfSight(state.city, ped.x, ped.y, px, py)) return true;
   }
   return false;
+}
+
+function director(state, dt) {
+  const w = state.wanted;
+  w.spawnT = (w.spawnT || 0) - dt;
+  const cars = state.cars.filter((c) => c.kind === 'police' && !c.wrecked);
+  const cops = state.peds.filter((p) => p.kind === 'cop' && !p.dead);
+  const px = state.player.car ? state.player.car.x : state.player.x;
+  const py = state.player.car ? state.player.car.y : state.player.y;
+
+  if (w.spawnT <= 0) {
+    w.spawnT = 0.8;
+    if (cars.length < WANTED.policeCars[w.stars]) {
+      const p = randomRoadPoint(state.rng, { x: px, y: py }, 640);
+      if (Math.hypot(p.x - px, p.y - py) > 560) spawnPoliceCar(state, p.x, p.y);
+    }
+    if (cops.length < WANTED.footCops[w.stars]) {
+      const p = randomRoadPoint(state.rng, { x: px, y: py }, 430);
+      spawnFootCop(state, p.x, p.y);
+    }
+  }
+  // Surplus or distant units drift away and are removed offstage.
+  if (w.stars === 0) {
+    state.cars = state.cars.filter((c) => c.kind !== 'police' || Math.hypot(c.x - px, c.y - py) < 900);
+    state.peds = state.peds.filter((p) => p.kind !== 'cop' || Math.hypot(p.x - px, p.y - py) < 700);
+  }
 }
 
 export function updateWanted(state, dt) {
   const w = state.wanted;
-  w.seenNow = playerSeen(state);
-  if (w.seenNow) w.lastSeen = state.elapsed;
-  if (!w.seenNow && state.elapsed - w.lastSeen > WANTED.decayDelaySec && w.heat > 0) {
-    w.heat = Math.max(0, w.heat - WANTED.decayPerSec * dt * (w.stars >= 3 ? 0.55 : 1));
+  const seen = w.stars > 0 && policeSeePlayer(state);
+  w.seenNow = seen;
+  if (seen) {
+    w.lastSeen = state.time;
+    w.lastSeenX = state.player.car ? state.player.car.x : state.player.x;
+    w.lastSeenY = state.player.car ? state.player.car.y : state.player.y;
+  } else if (w.heat > 0 && state.time - w.lastSeen > WANTED.decayDelay) {
+    w.heat = Math.max(0, w.heat - WANTED.decayRate * dt);
+    w.stars = starsForHeat(w.heat);
   }
-  const before = w.stars;
-  w.stars = starsForHeat(w.heat);
-  if (w.stars > before) state.fx.push({ type: 'starsUp', stars: w.stars });
-  if (w.stars === 0 && before > 0) state.fx.push({ type: 'escaped' });
+  director(state, dt);
 
-  // Bust pressure: police close to a slow/on-foot player at low stars.
-  const p = state.player;
-  if (w.stars >= 1 && w.stars <= 2) {
-    let close = false;
-    for (const car of state.cars) {
-      if (car.kind === 'police' && !car.dead && dist(car.x, car.y, p.x, p.y) < 30 && (!p.car || Math.abs(p.car.speed) < 14)) close = true;
+  // BUSTED: at one or two stars, a foot cop holding onto the player ends the chase.
+  if (!state.player.car && w.stars >= 1 && w.stars <= 2 && !state.over) {
+    let grabbed = false;
+    for (const ped of state.peds) {
+      if (ped.kind === 'cop' && !ped.dead && Math.hypot(ped.x - state.player.x, ped.y - state.player.y) < 26) grabbed = true;
     }
-    if (close) {
-      w.bustTimer += dt;
-      if (w.bustTimer > 1.1) state.fx.push({ type: 'busted' });
-    } else w.bustTimer = Math.max(0, w.bustTimer - dt * 2);
-  } else w.bustTimer = 0;
-
-  directPolice(state, dt);
-}
-
-// Spawn/retire police so the counts match the star level. Cars arrive on roads
-// a few blocks away, close enough to join the chase but never on top of the player.
-function directPolice(state, dt) {
-  const w = state.wanted;
-  let cars = 0, foot = 0;
-  for (const c of state.cars) if (c.kind === 'police' && !c.dead) cars++;
-  for (const ped of state.peds) if (ped.kind === 'cop' && !ped.dead) foot++;
-
-  const wantCars = WANTED.policeCarsByStars[w.stars];
-  const wantFoot = WANTED.policeFootByStars[w.stars];
-  state.policeSpawnCd = (state.policeSpawnCd || 0) - dt;
-
-  if (cars < wantCars && state.policeSpawnCd <= 0) {
-    state.policeSpawnCd = 1.6;
-    const p = state.player;
-    // Pick a road point 480–680 px away, on a road, inside the world.
-    for (let tries = 0; tries < 8; tries++) {
-      const horizontal = state.rng.chance(0.5);
-      const idx = nearestRoadIndex(horizontal ? p.y : p.x, horizontal);
-      const along = clamp((horizontal ? p.x : p.y) + state.rng.sign() * state.rng.range(480, 680), 40, (horizontal ? state.city.worldW : state.city.worldH) - 40);
-      const pt = lanePoint(idx, horizontal, 1, along);
-      if (dist(pt.x, pt.y, p.x, p.y) > 380) {
-        state.cars.push(makePoliceCar(state.rng, pt.x, pt.y));
-        break;
-      }
+    w.grabT = grabbed ? w.grabT + dt : 0;
+    if (w.grabT >= WANTED.grabTime) {
+      state.events.push({ type: 'busted' });
+      w.grabT = 0;
     }
+  } else {
+    w.grabT = 0;
   }
-  if (foot < wantFoot && state.policeSpawnCd <= 0) {
-    state.policeSpawnCd = 2.2;
-    const p = state.player;
-    const a = state.rng.range(0, Math.PI * 2);
-    const x = clamp(p.x + Math.cos(a) * 330, 20, state.city.worldW - 20);
-    const y = clamp(p.y + Math.sin(a) * 330, 20, state.city.worldH - 20);
-    state.peds.push(makePed(state.rng, x, y, 'cop'));
-  }
-  // When the heat is gone, police cars leave the world on their own (updatePoliceCar
-  // retires them); foot cops walk off in updatePed.
 }

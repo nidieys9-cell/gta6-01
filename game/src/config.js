@@ -1,89 +1,70 @@
-// config.js — every constant that shapes Sunhaven: world geometry, palette, tuning.
-// One place to tune the game; everything else imports from here.
+// config.js — every tuning number and colour for Sunhaven Heat in one place.
+// The city is a grid of blocks separated by roads; all distances are world pixels.
 
-export const TILE = {
-  road: 72,          // width of a road (two lanes + median dashes)
-  block: 168,        // city block interior (buildings + sidewalk)
-  sidewalk: 14,      // sidewalk ring inside each block
-};
-export const PITCH = TILE.road + TILE.block;      // 240 px between road centres
-export const COLS = 9;                            // blocks across
-export const ROWS = 7;                            // blocks down
-export const WORLD_W = TILE.road + COLS * PITCH;  // 2232
-export const WORLD_H = TILE.road + ROWS * PITCH;  // 1752
+export const ROAD = 96;            // road band width
+export const BLOCK = 256;          // block interior (buildings + sidewalks)
+export const PITCH = ROAD + BLOCK; // distance between neighbouring road starts
+export const COLS = 9;             // blocks across
+export const ROWS = 7;             // blocks down
+export const WORLD_W = COLS * PITCH + ROAD;
+export const WORLD_H = ROWS * PITCH + ROAD;
 
-export const VIEW_W = 1280;
-export const VIEW_H = 720;
+export const STEP = 1 / 60;        // fixed simulation step, seconds
+export const DAY_LENGTH = 300;     // one full sun cycle, seconds
 
 export const PLAYER = {
   radius: 11,
-  walkSpeed: 148,
-  sprintSpeed: 238,
-  maxHealth: 100,
-};
-
-export const CAR = {
-  length: 46,
-  width: 22,
-  maxSpeed: 342,       // px/s, forward
-  maxReverse: 108,
-  accel: 265,
-  brake: 430,
-  drag: 0.62,          // per-second velocity retention factor base
-  turnRate: 2.45,      // rad/s at full lock, scaled by speed
-  maxHealth: 100,
+  walkSpeed: 128,
+  sprintSpeed: 208,
+  maxHp: 100,
+  startCash: 120,
+  startAmmo: 36,
+  magSize: 12,
+  fireInterval: 0.21,
+  reloadTime: 0.9,
+  reach: 46,                       // how close to a car door F/E works from
 };
 
 export const WANTED = {
-  // heat points needed to hold each star level (index = stars)
-  thresholds: [0, 1, 7, 16, 30, 50],
-  decayPerSec: 0.55,        // heat lost while unseen
-  decayDelaySec: 4.5,       // grace period after last sighting before decay
-  sightRange: 330,          // how far cops/peds see the player commit a crime
-  policeCarsByStars: [0, 2, 3, 4, 6, 8],
-  policeFootByStars: [0, 0, 0, 1, 3, 5],
+  // heat needed to hold each star level (index = stars)
+  thresholds: [0, 20, 45, 75, 110, 150],
+  maxHeat: 190,
+  decayDelay: 4.5,                 // seconds unseen before heat starts cooling
+  decayRate: 3.2,                  // heat per second while cooling
+  sightRange: 560,                 // how far police can see the player
+  witnessRange: 270,               // how far a civilian can witness a crime
+  hearRange: 230,                  // how far a gunshot is heard
+  policeCars: [0, 1, 2, 3, 4, 6],  // squad cars wanted per star level
+  footCops: [0, 0, 0, 2, 3, 5],    // foot cops wanted per star level
+  grabTime: 0.9,                   // seconds of cop contact that ends in BUSTED
+  crime: {
+    gunshot: 7,
+    carTheft: 18,
+    carjack: 22,
+    crash: 6,
+    assault: 24,
+    murder: 40,
+    hitAndRun: 30,
+  },
 };
 
-export const DAY_LENGTH_SEC = 300;   // one full day/night cycle
-
-// Sun-soaked coastal palette: warm asphalt, sand sidewalks, pastel + glass towers.
-export const PALETTE = {
-  asphalt: '#3d3f46',
-  asphaltEdge: '#33353b',
-  laneMark: '#e8c766',
-  crosswalk: '#d8d8d2',
-  sidewalk: '#b8a888',
-  sidewalkEdge: '#9c8c6e',
-  grass: '#69a854',
-  sand: '#e3cf9e',
-  water: '#3f8ea6',
-  roofDowntown: ['#7d8ca3', '#93a5bd', '#6d7f99', '#a8b8cc'],
-  roofBeach: ['#e8b4a0', '#f0c8ae', '#dfa58e', '#f5d7bd'],
-  roofPort: ['#8a7f72', '#776c5e', '#998b7a'],
-  roofSuburb: ['#b0563a', '#9c4f36', '#c4674a', '#a85a40'],
-  wallDowntown: '#5d6d84',
-  wallBeach: '#e9d9c8',
-  wallPort: '#6e6257',
-  wallSuburb: '#d9c6a8',
-  carColors: ['#c94f42', '#3f6fb5', '#e0e4e8', '#2e2e33', '#e3b93c', '#4d9e6b', '#8e5aa8', '#d97c2e', '#7fb3c9', '#b5b0a4'],
-  pedShirts: ['#d95f4b', '#4b7fd9', '#e8e3d5', '#59b06a', '#e0b83c', '#9a62b5', '#3fbfae', '#e07ba0'],
-  pedPants: ['#33404f', '#5d5142', '#22242a', '#71543a', '#46586e'],
-};
+export const MISSION_REWARDS = [250, 400, 500, 650, 500, 700]; // sums to 3,000
 
 export const DISTRICTS = {
-  downtown: { name: 'Downtown', tall: true },
-  beach: { name: 'Palmera Beach', tall: false },
-  port: { name: 'Port Solana', tall: false },
-  suburb: { name: 'Las Colinas', tall: false },
+  beach:   { name: 'Palmera Beach', ground: '#c9b083', walk: '#d8c096', roof: ['#e07856', '#e89b6a', '#d96f4e', '#ecc27f'], wall: '#f2e3c8' },
+  downtown:{ name: 'Downtown',      ground: '#8d8d94', walk: '#a7a7ae', roof: ['#5d6a7a', '#6d7684', '#4d5866', '#7b8494'], wall: '#c9ccd4' },
+  port:    { name: 'Port Solana',   ground: '#97907f', walk: '#aaa28f', roof: ['#7a6a52', '#8a7a5c', '#6b5d47', '#94855f'], wall: '#d8cdb4' },
+  colinas: { name: 'Las Colinas',   ground: '#93a86e', walk: '#c9bd9d', roof: ['#b0563a', '#c06a44', '#a34d33', '#cd7f52'], wall: '#f4ead2' },
 };
 
-// District by block: west strip is the beach, south-east the port, centre downtown,
-// north and east suburbs. Keeps the map readable on the minimap and in screenshots.
-export function districtAt(bx, by) {
-  if (bx <= 1) return 'beach';
-  if (by >= ROWS - 2 && bx >= COLS - 3) return 'port';
-  if (bx >= 3 && bx <= 5 && by >= 2 && by <= 4) return 'downtown';
-  return 'suburb';
+// Which district a block belongs to. Downtown is the north-centre slab, the beach the
+// south-west shore, the port the south-east docks, Las Colinas the leafy north rim.
+export function districtKeyAt(col, row) {
+  if (row >= 4 && col <= 3) return 'beach';
+  if (row >= 4 && col >= 6) return 'port';
+  if (row <= 3 && col >= 3 && col <= 5) return 'downtown';
+  return 'colinas';
 }
 
-export const SAVE_KEY = 'sunhaven-heat-save-v1';
+export const CAR_COLORS = ['#c94f42', '#e0a458', '#5b84c4', '#63a05e', '#d8d3c8', '#7a5fa0', '#3f4145', '#e3e0d5', '#b56576', '#4e7d8a'];
+export const PED_COLORS = ['#d95f4b', '#e8b34b', '#5b8dd9', '#63b06e', '#e3e0d5', '#9a6fc0', '#48a8a0', '#e58bb1', '#8a8f98', '#c97b4a'];

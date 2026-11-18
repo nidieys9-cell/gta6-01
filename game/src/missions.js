@@ -1,197 +1,240 @@
-// missions.js — Dede's story: six chained jobs for Marco Reyes in Sunhaven.
-// Each mission is data + three small functions (setup, objective, check) run by
-// main.js; rewards, banners and the finale all flow through state.fx.
+// missions.js — Dede's six jobs: a short crime story chained end to end, each
+// with an on-screen objective, a banner, and a cash reward (250+400+500+650+
+// 500+700 = $3,000 for the whole chain). After the finale the city is free roam.
 
-import { dist } from './random.js';
+import { MISSION_REWARDS } from './config.js';
 import { makeCar } from './cars.js';
-import { makePed, sidewalkPointNear } from './peds.js';
-import { reportCrime } from './wanted.js';
+import { makePed } from './peds.js';
+import { clearWanted, setStars } from './wanted.js';
 
-function banner(state, title, sub) {
-  state.fx.push({ type: 'banner', title, sub });
-}
-
-export const MISSIONS = [
-  {
-    id: 'welcome',
-    title: 'First Night in Sunhaven',
-    brief: "Dede runs the diner on Palmera Beach and owes you a favour. Go meet her.",
-    reward: 50,
-    setup(state) { return { place: state.city.places.diner }; },
-    objective(rt) { return "Go to Dede's Diner"; },
-    marker(state, rt) { return rt.place; },
-    check(state, rt) { return dist(state.player.x, state.player.y, rt.place.x, rt.place.y) < 46; },
-  },
-  {
-    id: 'wheels',
-    title: 'Borrowed Wheels',
-    brief: 'Dede needs a clean sedan — the blue one parked by the beach blocks. Take it, deliver it to Port Solana Garage.',
-    reward: 200,
-    setup(state) {
-      // A specific parked car near the beach, marked for the job.
-      const spot = { x: state.city.places.diner.x + 150, y: state.city.places.diner.y + 190 };
-      const car = makeCar(state.rng, spot.x, spot.y, 0, 'mission');
-      car.color = '#3f6fb5';
-      car.driver = false;
-      car.missionTag = 'wheels';
-      state.cars.push(car);
-      return { car, stage: 0 };
-    },
-    objective(rt) { return rt.stage === 0 ? 'Steal the marked blue sedan' : 'Deliver the sedan to Port Solana Garage'; },
-    marker(state, rt) { return rt.stage === 0 ? rt.car : state.city.places.garage; },
-    check(state, rt) {
-      if (rt.stage === 0 && state.player.car === rt.car) {
-        rt.stage = 1;
-        banner(state, 'Wheels acquired', 'Take it to the garage — and try not to scratch it.');
-      }
-      if (rt.stage === 1) {
-        const g = state.city.places.garage;
-        return state.player.car === rt.car && dist(rt.car.x, rt.car.y, g.x, g.y) < 60;
-      }
-      return false;
-    },
-  },
-  {
-    id: 'courier',
-    title: 'Hot Courier',
-    brief: 'Pick up the package at the downtown payphone and run it to the Port Gate. The heat will notice — drive fast.',
-    reward: 350,
-    setup(state) { return { stage: 0, timeLeft: 0 }; },
-    objective(rt) {
-      return rt.stage === 0 ? 'Pick up the package at the payphone'
-        : `Deliver to the Port Gate — ${Math.max(0, Math.ceil(rt.timeLeft))}s left`;
-    },
-    marker(state, rt) { return rt.stage === 0 ? state.city.places.payphone : state.city.places.portGate; },
-    check(state, rt, dt) {
-      if (rt.stage === 0) {
-        const ph = state.city.places.payphone;
-        if (dist(state.player.x, state.player.y, ph.x, ph.y) < 42) {
-          rt.stage = 1;
-          rt.timeLeft = 110;
-          reportCrime(state, state.player.x, state.player.y, 16, true); // the pickup was watched
-          banner(state, 'Package on board', 'The whole port district just heard about it. GO.');
-        }
-        return false;
-      }
-      rt.timeLeft -= dt;
-      if (rt.timeLeft <= 0) {
-        rt.stage = 0; // blown it: pick the package up again
-        banner(state, 'Too slow', 'The buyer walked. Get the package again.');
-        return false;
-      }
-      const g = state.city.places.portGate;
-      const px = state.player.car ? state.player.car.x : state.player.x;
-      const py = state.player.car ? state.player.car.y : state.player.y;
-      return dist(px, py, g.x, g.y) < 56;
-    },
-  },
-  {
-    id: 'score',
-    title: 'Settle the Score',
-    brief: 'Vince Marlowe stiffed Dede and hired muscle. He strolls downtown with two guards. End the argument.',
-    reward: 500,
-    setup(state) {
-      const c = state.city.places.station;
-      const t = sidewalkPointNear(state.rng, c.x + 260, c.y + 120, 1);
-      const target = makePed(state.rng, t.x, t.y, 'target');
-      target.name = 'Vince Marlowe';
-      state.peds.push(target);
-      for (let i = 0; i < 2; i++) {
-        const g = sidewalkPointNear(state.rng, t.x + 30 * (i + 1), t.y + 18 * i, 1);
-        const guard = makePed(state.rng, g.x, g.y, 'guard');
-        state.peds.push(guard);
-      }
-      return { target };
-    },
-    objective() { return 'Take out Vince Marlowe'; },
-    marker(state, rt) { return rt.target.dead ? null : rt.target; },
-    check(state, rt) { return rt.target.dead; },
-  },
-  {
-    id: 'cooloff',
-    title: 'Cool Off',
-    brief: "Too much noise, Marco. Half the force is about to come looking — lose them. Break sight and stay hidden until the stars are gone.",
-    reward: 400,
-    setup(state) {
-      reportCrime(state, state.player.x, state.player.y, 30, true);
-      return {};
-    },
-    objective(rt, state) { return `Lose the heat (wanted: ${state.wanted.stars}★)`; },
-    marker() { return null; },
-    check(state) { return state.wanted.stars === 0 && state.wanted.heat <= 0.5; },
-  },
-  {
-    id: 'bigscore',
-    title: 'The Solana Score',
-    brief: 'An armoured cash van sits at the Port Gate with your name on it. Steal it and bring it to the Palmera Safehouse. Every cop in Sunhaven will object.',
-    reward: 1500,
-    setup(state) {
-      const g = state.city.places.portGate;
-      const van = makeCar(state.rng, g.x - 60, g.y - 40, Math.PI, 'mission');
-      van.color = '#4a4f57';
-      van.health = 260;
-      van.armored = true;
-      van.driver = false;
-      van.missionTag = 'van';
-      state.cars.push(van);
-      for (let i = 0; i < 2; i++) {
-        const gp = sidewalkPointNear(state.rng, g.x - 30 + i * 46, g.y + 30, 1);
-        state.peds.push(makePed(state.rng, gp.x, gp.y, 'guard'));
-      }
-      return { van, stage: 0 };
-    },
-    objective(rt) { return rt.stage === 0 ? 'Steal the armoured van at the Port Gate' : 'Deliver the van to the Palmera Safehouse'; },
-    marker(state, rt) { return rt.stage === 0 ? rt.van : state.city.places.hideout; },
-    check(state, rt) {
-      if (rt.stage === 0 && state.player.car === rt.van) {
-        rt.stage = 1;
-        reportCrime(state, rt.van.x, rt.van.y, 50, true);
-        banner(state, 'The Score is rolling', 'Every unit in Sunhaven is coming. Get to the safehouse.');
-      }
-      if (rt.stage === 1) {
-        const h = state.city.places.hideout;
-        return state.player.car === rt.van && dist(rt.van.x, rt.van.y, h.x, h.y) < 64;
-      }
-      return false;
-    },
-  },
+export const MISSION_TITLES = [
+  'First Contact',
+  'Hot Wheels',
+  'Hot Package',
+  'Settle the Score',
+  'Cool Off',
+  'The Solana Score',
 ];
 
-// Start mission `index` (or mark the story done), pushing the title banner.
-export function startMission(state, index) {
-  if (index >= MISSIONS.length) {
-    state.storyDone = true;
-    state.mission = null;
-    banner(state, 'Story complete', 'Sunhaven is yours, Marco. Free roam — the city keeps turning.');
-    state.fx.push({ type: 'jingle', win: true });
+function banner(state, title, sub) {
+  state.events.push({ type: 'banner', title, sub });
+}
+function toast(state, text) {
+  state.events.push({ type: 'toast', text });
+}
+function distTo(state, p) {
+  return Math.hypot(state.player.x - p.x, state.player.y - p.y);
+}
+
+/** Set up the persistent cast and start the chain. Call once per new game. */
+export function setupMissions(state) {
+  const diner = state.city.places.diner;
+  const dede = makePed(state, 'dede', diner.door.x + 14, diner.door.y + 8, { name: 'Dede' });
+  state.mission.dede = dede;
+  startMission(state, 0);
+}
+
+export function startMission(state, i) {
+  const m = state.mission;
+  m.i = i;
+  m.phase = 0;
+  m.timer = 0;
+  m.data = {};
+  const places = state.city.places;
+
+  if (i === 1) {
+    // A very stealable magenta coupe, parked up in Downtown.
+    const bank = places.bank;
+    const car = makeCar(state.rng, 'coupe', bank.pad.x + 90, bank.pad.y - 130, Math.PI, 'parked');
+    car.color = '#d1345b';
+    car.tag = 'm2-target';
+    state.cars.push(car);
+    m.data.car = car;
+    toast(state, 'Dede: "That magenta coupe downtown? It is yours. Bring it to my garage."');
+  } else if (i === 3) {
+    const yard = places.yard;
+    const vince = makePed(state, 'target', yard.pad.x, yard.pad.y - 30, { name: 'Vince Marlowe', post: { x: yard.pad.x, y: yard.pad.y - 30 } });
+    vince.guardPost = { x: vince.x, y: vince.y };
+    m.data.target = vince;
+    m.data.guards = [
+      makePed(state, 'guard', yard.pad.x - 42, yard.pad.y + 6, { post: { x: yard.pad.x - 42, y: yard.pad.y + 6 } }),
+      makePed(state, 'guard', yard.pad.x + 42, yard.pad.y + 6, { post: { x: yard.pad.x + 42, y: yard.pad.y + 6 } }),
+    ];
+    for (const g of m.data.guards) g.guardPost = g.guardPost || { x: g.x, y: g.y };
+    toast(state, 'Dede: "Vince Marlowe shorted us for the last time. His yard, down at the port."');
+  } else if (i === 5) {
+    const bank = places.bank;
+    const truck = makeCar(state.rng, 'truck', bank.pad.x - 60, bank.pad.y - 120, 0, 'parked');
+    truck.tag = 'm6-truck';
+    state.cars.push(truck);
+    m.data.car = truck;
+    m.data.guards = [
+      makePed(state, 'guard', truck.x - 30, truck.y + 26, { post: { x: truck.x - 30, y: truck.y + 26 } }),
+      makePed(state, 'guard', truck.x + 34, truck.y - 24, { post: { x: truck.x + 34, y: truck.y - 24 } }),
+    ];
+    toast(state, 'Dede: "One last score, Marco. The bank\'s cash truck. Take it to the safehouse."');
+  }
+}
+
+function completeMission(state) {
+  const m = state.mission;
+  const reward = MISSION_REWARDS[m.i];
+  state.player.cash += reward;
+  banner(state, `MISSION COMPLETE — ${MISSION_TITLES[m.i]}`, `+$${reward}`);
+  state.events.push({ type: 'missionComplete', i: m.i, reward });
+  const next = m.i + 1;
+  if (next < MISSION_TITLES.length) {
+    startMission(state, next);
+  } else {
+    m.i = MISSION_TITLES.length;
+    m.phase = 0;
+    m.data = {};
+    state.freeRoam = true;
+    banner(state, 'THE SOLANA SCORE — STORY COMPLETE', 'Sunhaven is yours now');
+  }
+}
+
+export function updateMissions(state, dt) {
+  const m = state.mission;
+  const places = state.city.places;
+  const player = state.player;
+  state.objective = '';
+
+  switch (m.i) {
+    case 0: {
+      state.objective = "Meet Dede outside the diner in Palmera Beach";
+      if (distTo(state, places.diner.pad) < 58) completeMission(state);
+      break;
+    }
+    case 1: {
+      const car = m.data.car;
+      if (!car || car.wrecked) {
+        state.objective = 'The coupe is wrecked — Dede is sourcing another…';
+        if (!m.data.wreckT) m.data.wreckT = state.time;
+        if (state.time - m.data.wreckT > 4) startMissionKeepPhase(state);
+      } else if (m.phase === 0) {
+        state.objective = 'Steal the magenta coupe in Downtown';
+        if (player.car === car) {
+          m.phase = 1;
+          toast(state, 'Dede: "That is the one. Now the garage — and try to keep the paint on."');
+        }
+      } else {
+        state.objective = "Deliver the coupe to Dede's Garage";
+        if (player.car === car && distTo(state, places.garage.pad) < 66) completeMission(state);
+      }
+      break;
+    }
+    case 2: {
+      if (m.phase === 0) {
+        state.objective = 'Pick up the package at the downtown payphone';
+        if (distTo(state, places.payphone.pad) < 42) {
+          m.phase = 1;
+          m.timer = 150;
+          setStars(state, 2);
+          banner(state, 'HOT PACKAGE', 'The whole district just heard about it');
+        }
+      } else {
+        m.timer -= dt;
+        const left = Math.max(0, Math.ceil(m.timer));
+        state.objective = `Deliver the package to the Harbour Drop — ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} left`;
+        if (distTo(state, places.drop.pad) < 66) {
+          completeMission(state);
+        } else if (m.timer <= 0) {
+          m.phase = 0;
+          toast(state, 'Too late — the package went cold. Pick it up again.');
+        }
+      }
+      break;
+    }
+    case 3: {
+      const vince = m.data.target;
+      state.objective = 'Settle the score with Vince Marlowe at Marlowe Yard';
+      if (vince && !vince.dead && m.phase === 0 && distTo(state, vince) < 250) {
+        m.phase = 1;
+        banner(state, 'SETTLE THE SCORE', 'Vince has seen you');
+      }
+      if (vince && vince.dead) completeMission(state);
+      break;
+    }
+    case 4: {
+      if (m.phase === 0) {
+        state.objective = 'Cause enough trouble to earn 3 stars';
+        if (state.wanted.stars >= 3) {
+          m.phase = 1;
+          banner(state, 'COOL OFF', 'Now break their sight and let the heat die');
+        }
+      } else {
+        state.objective = 'Lose the heat — stay out of sight until the stars are gone';
+        if (state.wanted.stars === 0) completeMission(state);
+      }
+      break;
+    }
+    case 5: {
+      const truck = m.data.car;
+      if (m.phase === 0) {
+        state.objective = "Steal the armoured cash truck at Solana Bank";
+        if (truck && state.player.car === truck) {
+          m.phase = 1;
+          setStars(state, 4);
+          banner(state, 'THE SOLANA SCORE', 'Every cop in Sunhaven is awake now');
+        }
+      } else {
+        state.objective = 'Deliver the cash truck to the Safehouse in Port Solana';
+        if (truck && player.car === truck && distTo(state, places.safehouse.pad) < 72) completeMission(state);
+      }
+      break;
+    }
+    default: {
+      state.objective = 'Free roam — Sunhaven is yours';
+    }
+  }
+}
+
+function startMissionKeepPhase(state) {
+  // Respawn the mission-2 coupe after a wreck, keeping the mission index.
+  const bank = state.city.places.bank;
+  const car = makeCar(state.rng, 'coupe', bank.pad.x + 90, bank.pad.y - 130, Math.PI, 'parked');
+  car.color = '#d1345b';
+  car.tag = 'm2-target';
+  state.cars.push(car);
+  state.mission.data = { car };
+  state.mission.phase = 0;
+}
+
+/** Where the gold marker points right now, or null when there is no target. */
+export function objectiveTarget(state) {
+  const m = state.mission;
+  const places = state.city.places;
+  switch (m.i) {
+    case 0: return places.diner.pad;
+    case 1: return m.phase === 0 && m.data.car ? { x: m.data.car.x, y: m.data.car.y } : places.garage.pad;
+    case 2: return m.phase === 0 ? places.payphone.pad : places.drop.pad;
+    case 3: return m.data.target && !m.data.target.dead ? { x: m.data.target.x, y: m.data.target.y } : null;
+    case 5: return m.phase === 0 && m.data.car ? { x: m.data.car.x, y: m.data.car.y } : places.safehouse.pad;
+    default: return null;
+  }
+}
+
+/** Save-file restore: jump the chain to a mission index without side effects. */
+export function restoreMission(state, index) {
+  state.mission.i = index;
+  state.mission.phase = 0;
+  state.mission.data = {};
+  if (index >= MISSION_TITLES.length) {
+    state.freeRoam = true;
     return;
   }
-  const m = MISSIONS[index];
-  state.missionIndex = index;
-  state.mission = { def: m, rt: m.setup(state) };
-  banner(state, m.title, m.brief);
-  state.fx.push({ type: 'missionStart', title: m.title });
+  if (index > 0) startMission(state, index);
 }
 
-// Advance the active mission; on completion pay out and chain the next one.
-export function updateMission(state, dt) {
-  const cur = state.mission;
-  if (!cur) return;
-  if (cur.def.check(state, cur.rt, dt)) {
-    state.money += cur.def.reward;
-    state.fx.push({ type: 'missionDone', title: cur.def.title, reward: cur.def.reward });
-    state.fx.push({ type: 'jingle', win: true });
-    state.mission = null;
-    state.nextMissionIn = 3.2; // a breath before Dede calls again
+/** When the player is wasted mid-mission, reset the fragile bits fairly. */
+export function onPlayerWasted(state) {
+  const m = state.mission;
+  if (m.i === 2 && m.phase === 1) { m.phase = 0; m.timer = 0; }
+  if (m.i === 3 && m.data.target && !m.data.target.dead) {
+    m.data.target.hp = 60;
+    m.phase = 0;
   }
-}
-
-export function currentObjective(state) {
-  if (!state.mission) return state.storyDone ? 'Free roam — Sunhaven is yours.' : '';
-  return state.mission.def.objective(state.mission.rt, state);
-}
-
-export function currentMarker(state) {
-  if (!state.mission) return null;
-  return state.mission.def.marker(state, state.mission.rt);
+  if (m.i === 4 && m.phase === 1) m.phase = 0;
+  clearWanted(state);
 }
