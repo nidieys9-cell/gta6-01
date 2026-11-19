@@ -90,3 +90,7 @@ Screenshot scenes for the entry's pictures live in `shots.json`
 ## License
 
 MIT — see `LICENSE`.
+
+## Determinism
+
+Each of the four screenshot scenes is staged through the seeded query parameters listed in `shots.json`, so the scene setup is fixed rather than left to chance. Rendering with the same seed produces the same result on every run, which makes all four screenshots fully reproducible.
