@@ -45,6 +45,21 @@ node serve.ts        # then open http://localhost:8080
 - **Day & night** — a full sun cycle: dusk grade, streetlamp pools, headlight
   cones and lit windows after dark.
 
+## Screenshots
+
+The entry ships four staged screenshots, each posed from a deterministic
+scene in `shots.json`:
+
+- **Title (`1-title.jpg`)** — the title screen, with the game's name over a
+  first look at Sunhaven's sunlit streets before you drop into the city.
+- **Mission (`2-mission.jpg`)** — a mission in progress, with Marco on the
+  job in the city, the current objective on the HUD and the minimap showing
+  where he needs to go.
+- **Chase (`3-chase.jpg`)** — a police chase in bright midday light, with
+  squad cars closing in on the player's car under a 3-star wanted level.
+- **Night (`4-night.jpg`)** — the Port Solana waterfront after dark, where
+  streetlamps, headlights and lit windows take over from the daylight.
+
 ## Controls
 
 | Keys | Action |
